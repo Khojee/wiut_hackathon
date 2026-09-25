@@ -59,7 +59,15 @@ code {
   overflow-x: auto;
   white-space: nowrap;
 }
-.topnav .brand { font-weight: 700; color: var(--ink); margin-right: 8px; }
+.topnav .brand {
+  font-weight: 700;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin-right: 6px;
+  padding-right: 20px;
+  border-right: 1px solid var(--line);
+}
 .topnav a { color: var(--ink-soft); font-size: 14.5px; }
 .topnav a:hover { color: var(--acc); text-decoration: none; }
 
@@ -235,6 +243,23 @@ figcaption b { color: var(--ink-soft); }
   display: grid;
   place-items: center;
 }
+
+.team-meta { margin-top: -6px; }
+
+.team {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  margin: 22px 0 8px;
+}
+.member {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+.member h3 { margin: 0 0 8px; font-size: 18px; }
+.member p { margin: 0; font-size: 15.5px; }
 
 footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px 24px 50px; }
 
