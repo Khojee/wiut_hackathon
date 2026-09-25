@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alert Triage — EDA &amp; Modeling Report · Team 365B6DEC</title>
+  <meta name="description" content="Exploratory data analysis and modeling approach for the fintech alert-triage (escalation prediction) competition.">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="topnav" aria-label="Sections">
+  <div class="inner">
+    <span class="brand">Alert Triage</span>
+    <a href="#approach">1 · Approach</a>
+    <a href="#dataset">2 · Dataset</a>
+    <a href="#eda">3 · Visualizations</a>
+    <a href="#observations">4 · Observations</a>
+    <a href="#target">5 · Target &amp; behavior</a>
+    <a href="#features">6 · Features &amp; modeling</a>
+    <a href="#conclusion">7 · Conclusion</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="inner">
+    <p class="eyebrow">Fintech alert triage · Team 365B6DEC</p>
+    <h1>Which transaction-monitoring alerts get escalated?</h1>
+    <p class="lead">An end-to-end look at 20,000 alerts and 10 million transactions: what the data really contains, which behaviors separate escalated alerts from dismissed ones, and how we turned each alert's history into a probability.</p>
+    <div class="metrics">
+      <div class="metric"><div class="value">0.644</div><div class="label">out-of-fold ROC-AUC (5-fold CV)</div></div>
+      <div class="metric"><div class="value">17.2%</div><div class="label">base escalation rate</div></div>
+      <div class="metric"><div class="value">10.0M</div><div class="label">transactions (train + test)</div></div>
+      <div class="metric"><div class="value">324</div><div class="label">engineered features per alert</div></div>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- 1 ------------------------------------------------------------------ -->
+<section id="approach">
+  <span class="section-num">Section 1</span>
+  <h2>Approach</h2>
+  <p>Each alert (<code>signal_id</code>) comes with a many-to-one history of transactions. We aggregate that history into one feature vector per alert, then train models to rank alerts by escalation probability. ROC-AUC is the metric, so the whole pipeline is built around an <strong>honest out-of-fold estimate</strong>. No fold ever picks its own hyperparameters, tree count, or blend weight.</p>
+  <ol class="steps">
+    <li><b>Audit the data</b>Verify schemas and joins, check timestamps against alert dates, and look for clipping and artifacts.</li>
+    <li><b>Explore</b>Compare escalated and dismissed alerts on volume, direction, type mix, amounts, recency, and timing.</li>
+    <li><b>Engineer features</b>324 per-alert aggregates. Every feature is computed the same way on train and test; the only statistics fit globally (per-type amount normalization) come from train.</li>
+    <li><b>Validate honestly</b>Stratified 5-fold CV. Tuning and blend weights use a separate fold split. The pipeline passes a permuted-label test and an adversarial check.</li>
+    <li><b>Model &amp; blend</b>A 3-seed LightGBM bag blended in logit space with an L2 logistic regression, then Platt-calibrated.</li>
+  </ol>
+</section>
+
+<!-- 2 ------------------------------------------------------------------ -->
+<section id="dataset">
+  <span class="section-num">Section 2</span>
+  <h2>Dataset overview and structure</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>File</th><th class="num">Rows</th><th>Columns</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td><code>train_signals.csv</code></td><td class="num">14,000</td><td>signal_id, signal_sanasi, eskalatsiya</td><td>One row per alert, with the target</td></tr>
+        <tr><td><code>train_transactions.parquet</code></td><td class="num">6,987,663</td><td>signal_id, tranzaksiya_vaqti, kirim_chiqim, tranzaksiya_turi, miqdor_indeksi</td><td>Transaction history for train alerts</td></tr>
+        <tr><td><code>test_signals.csv</code></td><td class="num">6,000</td><td>signal_id, signal_sanasi</td><td>Alerts to score</td></tr>
+        <tr><td><code>test_transactions.parquet</code></td><td class="num">3,027,575</td><td>same as train</td><td>Transaction history for test alerts</td></tr>
+        <tr><td><code>sample_submission.csv</code></td><td class="num">6,000</td><td>signal_id, ehtimollik</td><td>Output format (placeholder 0.5)</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Direction (<code>kirim_chiqim</code>): 75.7% of transactions are inflows (<em>kirim</em>) and 24.3% are outflows (<em>chiqim</em>). Type (<code>tranzaksiya_turi</code>): card 53.8%, bank transfer 39.4%, cash 6.3%, international 0.46%. <code>miqdor_indeksi</code> is a standardized amount index (mean −0.13, standard deviation 0.98, right-skewed). There are no missing values, no duplicate rows, no alert without transactions, and no ID overlap between train and test. Alerts span 2025-01-01 to 2026-12-31 in both splits, so there is no time-based train/test split to account for.</p>
+  <p>Each alert has between 1 and 2,279 transactions (median 461, mean 499). The history window is at most <strong>180 days</strong> and ends on the alert date.</p>
+  <figure>
+    <a href="assets/01_history_window.png" target="_blank" rel="noopener"><img src="assets/01_history_window.png" alt="Histogram of transactions by days before the alert, and the gap between the last transaction and the alert" loading="lazy"></a>
+    <figcaption><b>Temporal audit.</b> Every transaction falls at or before its alert date (zero rows after it, in both splits). The last transaction is almost always on the day before the alert. The spike on that day is explained in Section 3.</figcaption>
+  </figure>
+  <div class="callout">
+    <p><strong>Temporal leakage check:</strong> 0 of 10.0M transactions are dated after their alert. About 0.06% fall on the alert day itself, most of them stamped exactly 00:00:00. Because <code>signal_sanasi</code> has day granularity, we keep them as pre-alert history. The pipeline still filters to <code>tx_time &lt; alert_date + 1 day</code> in case future rows are ever appended.</p>
+  </div>
+</section>
+
+<!-- 3 ------------------------------------------------------------------ -->
+<section id="eda">
+  <span class="section-num">Section 3</span>
+  <h2>EDA visualizations</h2>
+  <p>In every "escalation rate by decile" chart, alerts are split into ten equal-sized groups by one metric. Red bars sit above the 17.2% base rate (dashed line) and blue bars below it.</p>
+
+  <h3>Transaction volume</h3>
+  <figure>
+    <a href="assets/03_tx_per_signal.png" target="_blank" rel="noopener"><img src="assets/03_tx_per_signal.png" alt="Transactions per alert by class, and escalation rate by transaction-count decile" loading="lazy"></a>
+    <figcaption><b>Busier accounts escalate slightly more often.</b> Escalated alerts average 524 transactions versus 494 for dismissed ones, but the distributions overlap heavily (univariate AUC 0.531).</figcaption>
+  </figure>
+
+  <h3>Inflow vs. outflow</h3>
+  <figure>
+    <a href="assets/04_direction.png" target="_blank" rel="noopener"><img src="assets/04_direction.png" alt="Escalation rate by inflow share and by inflow/outflow volume ratio" loading="lazy"></a>
+    <figcaption><b>Direction balance is weakly informative.</b> The inflow share of transactions is 75.0% for dismissed and 74.4% for escalated alerts. The in/out volume ratio has an AUC of only 0.49.</figcaption>
+  </figure>
+
+  <h3>Transaction-type mix: cash and international</h3>
+  <figure>
+    <a href="assets/05_type_mix.png" target="_blank" rel="noopener"><img src="assets/05_type_mix.png" alt="Type shares by class, escalation rate by cash share of transactions and by cash share of volume" loading="lazy"></a>
+    <figcaption><b>Cash matters most by volume, not by count.</b> Cash share of the transaction count barely moves the escalation rate. Cash share of the <em>money moved</em>, however, raises it steadily from about 12–13% in the lowest deciles to 24% in the highest. Alerts with any international transaction escalate at 17.9%, versus 15.4% for those without.</figcaption>
+  </figure>
+
+  <h3>Amount indicator: distribution, tails and clipping</h3>
+  <figure>
+    <a href="assets/06_amount_distribution.png" target="_blank" rel="noopener"><img src="assets/06_amount_distribution.png" alt="Amount index histogram with a zoomed-in floor, distributions by type, and mean amount by type, direction and outcome" loading="lazy"></a>
+    <figcaption><b>Each type has its own amount level, with hard clipping at both ends.</b> From high to low: international, cash, bank transfer, card. Values have a hard floor at −2.912, reached only by incoming bank transfers (4,287 rows, see the inset), and each type has its own upper cap (card is capped at 4.18). Escalated accounts show lower means in most type × direction cells, most clearly for outgoing bank transfers.</figcaption>
+  </figure>
+  <figure>
+    <a href="assets/07_amount_vs_outcome.png" target="_blank" rel="noopener"><img src="assets/07_amount_vs_outcome.png" alt="Escalation rate by type-adjusted amount, by outgoing bank-transfer amount, and by number of floor-clipped inflows" loading="lazy"></a>
+    <figcaption><b>Smaller flows mean more escalation.</b> The escalation rate falls from 21% to 14% across deciles of the type-adjusted mean amount, and from 23% to 11% across deciles of mean outgoing bank-transfer size. Accounts with at least one floor-clipped inflow escalate at about half the base rate (9.8% versus 18.4%).</figcaption>
+  </figure>
+
+  <h3>Recency, velocity and the trigger burst</h3>
+  <figure>
+    <a href="assets/08_trigger_burst.png" target="_blank" rel="noopener"><img src="assets/08_trigger_burst.png" alt="Transactions per minute in the last hour before the alert, burst size by class, and type mix of burst vs. history" loading="lazy"></a>
+    <figcaption><b>Data artifact: a burst packed into the last three minutes.</b> 552,615 transactions (7.9% of all rows, about 40 per alert, present for 99% of alerts) are stamped between 23:57 and 23:59 right before the alert date. The burst leans toward card payments with small amounts, and it is the <em>same size for both classes</em> (AUC 0.514).</figcaption>
+  </figure>
+  <figure>
+    <a href="assets/09_recency_velocity.png" target="_blank" rel="noopener"><img src="assets/09_recency_velocity.png" alt="Burst-free activity per alert per day before the alert, and escalation rate by last-7-day activity ratio" loading="lazy"></a>
+    <figcaption><b>No behavioral acceleration before escalated alerts.</b> With the burst removed, activity actually thins out toward the alert for both classes, from about 3 to about 1 transaction per day. Recent-versus-history activity ratios score an AUC of about 0.50.</figcaption>
+  </figure>
+
+  <h3>Time of day and day of week</h3>
+  <figure>
+    <a href="assets/10_time_patterns.png" target="_blank" rel="noopener"><img src="assets/10_time_patterns.png" alt="Hour-of-day and day-of-week profiles by class" loading="lazy"></a>
+    <figcaption><b>Timing is flat.</b> Hour and weekday profiles of escalated and dismissed accounts overlap almost exactly; night-time share has an AUC of 0.508.</figcaption>
+  </figure>
+</section>
+
+<!-- 4 ------------------------------------------------------------------ -->
+<section id="observations">
+  <span class="section-num">Section 4</span>
+  <h2>Key observations from transaction history</h2>
+  <div class="insights">
+    <div class="insight"><span class="tag up">↑ escalation</span><h4>Cash share of volume</h4><p>The strongest single signal (AUC 0.571). Accounts where cash makes up a larger share of the money moved escalate up to twice as often.</p></div>
+    <div class="insight"><span class="tag down">↓ escalation</span><h4>Larger bank-transfer amounts</h4><p>Higher mean outgoing bank-transfer size means <em>less</em> escalation (23% down to 11% across deciles; AUC 0.572 in that direction).</p></div>
+    <div class="insight"><span class="tag down">↓ escalation</span><h4>Floor-clipped inflows</h4><p>Incoming bank transfers clipped at the amount floor (−2.912) appear in 14% of alerts. Those alerts escalate at 9.8%, versus 18.4% for the rest.</p></div>
+    <div class="insight"><span class="tag up">↑ escalation</span><h4>Smaller type-adjusted amounts</h4><p>Once each transaction is compared with the norm for its type and direction, escalated accounts move smaller amounts across the board (AUC 0.543).</p></div>
+    <div class="insight"><span class="tag up">↑ escalation</span><h4>More activity, international use</h4><p>Transaction count (AUC 0.531), cash share (0.524) and international share (0.522) all lean toward escalation, but only slightly.</p></div>
+    <div class="insight"><span class="tag data">data artifact</span><h4>Trigger burst at 23:57–23:59</h4><p>About 40 transactions per alert are packed into the three minutes before the alert date. They're admissible (all before the alert) and equal across classes. We checked the leakage risk with an ablation.</p></div>
+    <div class="insight"><span class="tag flat">no signal</span><h4>Recency, time of day, weekday</h4><p>No pre-alert acceleration, no night-time or weekend pattern. All of these score AUC ≈ 0.50–0.51, contrary to the classic AML intuition.</p></div>
+    <div class="insight"><span class="tag data">data quality</span><h4>Clean relational structure</h4><p>No transactions after the alert, no missing values, and no orphan or duplicated IDs. 15% of alerts have unsorted transactions, so we sort before computing any sequence feature.</p></div>
+  </div>
+</section>
+
+<!-- 5 ------------------------------------------------------------------ -->
+<section id="target">
+  <span class="section-num">Section 5</span>
+  <h2>Target distribution and behavioral pattern analysis</h2>
+  <figure>
+    <a href="assets/02_target_distribution.png" target="_blank" rel="noopener"><img src="assets/02_target_distribution.png" alt="Target class counts and monthly escalation rate" loading="lazy"></a>
+    <figcaption><b>A moderate 1 : 4.8 imbalance that is stable over time.</b> 2,405 of 14,000 alerts (17.2%) were escalated. The monthly escalation rate moves within sampling noise (14–21%) with no trend, so no time-based reweighting is needed.</figcaption>
+  </figure>
+  <p>Because ROC-AUC depends only on ranking, we don't resample. The linear model uses balanced class weights, and the final blended score is Platt-calibrated so that the mean predicted probability matches the 17.2% base rate.</p>
+
+  <h3>How escalated and dismissed alerts differ</h3>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Behavior (per alert)</th><th class="num">Dismissed</th><th class="num">Escalated</th><th class="num">Univariate AUC*</th></tr></thead>
+      <tbody>
+        <tr><td>Cash share of volume</td><td class="num">9.6%</td><td class="num"><span class="pos">10.9%</span></td><td class="num">0.571</td></tr>
+        <tr><td>Mean outgoing bank-transfer amount (tx-level)</td><td class="num">0.344</td><td class="num"><span class="neg">0.201</span></td><td class="num">0.572</td></tr>
+        <tr><td>Share of alerts with a floor-clipped inflow</td><td class="num">15.4%</td><td class="num"><span class="neg">8.0%</span></td><td class="num">0.537</td></tr>
+        <tr><td>Type-adjusted mean amount (z-score)</td><td class="num">higher</td><td class="num"><span class="neg">lower</span></td><td class="num">0.543</td></tr>
+        <tr><td>Transactions in the 180-day window</td><td class="num">494</td><td class="num"><span class="pos">524</span></td><td class="num">0.531</td></tr>
+        <tr><td>Cash share of transaction count</td><td class="num">6.21%</td><td class="num"><span class="pos">6.48%</span></td><td class="num">0.524</td></tr>
+        <tr><td>International share of transaction count</td><td class="num">0.44%</td><td class="num"><span class="pos">0.45%</span></td><td class="num">0.522</td></tr>
+        <tr><td>Trigger-burst size</td><td class="num">39.2</td><td class="num">40.7</td><td class="num">0.514</td></tr>
+        <tr><td>Night-time (00–06) share</td><td class="num">—</td><td class="num">—</td><td class="num">0.508</td></tr>
+        <tr><td>Last-7-day activity ratio (burst-free)</td><td class="num">0.344</td><td class="num">0.339</td><td class="num">0.501</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p style="font-size:14.5px;color:var(--muted)">*AUC of the single metric used alone as a score, oriented toward escalation (0.5 means no signal). Red marks a higher value among escalated alerts and blue a lower one.</p>
+  <div class="callout">
+    <p><strong>The picture that emerges:</strong> escalation is not driven by a dramatic event (bursts, night activity, a sudden change). It's driven by the <strong>composition</strong> of an account's flows: more of the money moving as cash, and smaller transfers and card payments than is normal for each channel. The signal is weak and spread across many features. No single feature scores above 0.58 AUC, and combining them lifts that to 0.644.</p>
+  </div>
+</section>
+
+<!-- 6 ------------------------------------------------------------------ -->
+<section id="features">
+  <span class="section-num">Section 6</span>
+  <h2>Features and modeling ideas motivated by the EDA</h2>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>EDA finding</th><th>Feature(s) it motivated</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>No future transactions; fixed ≤ 180-day window</td><td>Pre-alert filter (kept defensively); <code>days_since_first</code>, <code>span_days</code>, <code>days_since_last</code></td></tr>
+        <tr><td>2</td><td>Escalated alerts have slightly more transactions</td><td><code>n_tx</code>, <code>tx_per_day</code>, <code>active_days</code>, per-day count statistics</td></tr>
+        <tr><td>3</td><td>Cash share of <em>volume</em> rises steadily with escalation</td><td><code>cash_share_of_volume</code>, <code>share_is_naqd</code>, <code>cash_intl_share</code>, cash amount quantiles</td></tr>
+        <tr><td>4</td><td>International transactions slightly more common among escalated alerts</td><td><code>share_is_xalqaro</code>, <code>intl_share_of_volume</code>, <code>xalqaro_*</code> statistics</td></tr>
+        <tr><td>5</td><td>Amount level depends on type; escalated accounts move smaller bank-transfer amounts</td><td>Mean/std/q10/q50/q90 per type × direction; type-adjusted <code>z_*</code> features (normalization fit on train only)</td></tr>
+        <tr><td>6</td><td>Floor-clipped inflows roughly halve the escalation rate</td><td><code>cnt_is_floor</code>, <code>share_is_floor</code>, <code>amt_min</code></td></tr>
+        <tr><td>7</td><td>Heavy right tail and per-type caps</td><td><code>amt_max</code>, <code>amt_top5_mean</code>, <code>amt_spike_z</code> (max vs. mean), <code>share_is_big2/3</code>, amount-histogram shares</td></tr>
+        <tr><td>8</td><td>Inflow/outflow balance weakly informative</td><td><code>in_out_count_ratio</code>, <code>in_out_volume_logratio</code>, <code>net_flow_share</code>, pass-through (inflow followed by a similar outflow within 1h/24h)</td></tr>
+        <tr><td>9</td><td>"Sudden change" is the canonical AML hypothesis</td><td>1/3/7/14/30/60/90-day windows and last-10/50 transactions vs. all-time (rate ratios, mix and amount deltas), 30-day bucket trends</td></tr>
+        <tr><td>10</td><td>Trigger burst before every alert, same size for both classes</td><td>Burst pooled into the amount/type statistics (more samples, less noise). A separate burst block and burst-free timing features were tested and rejected.</td></tr>
+        <tr><td>11</td><td>Hour and weekday profiles flat</td><td><code>share_is_night</code>, <code>share_is_weekend</code>, <code>hour_mean/std</code> (low priority)</td></tr>
+        <tr><td>12</td><td>Some alerts have very few transactions (166 train alerts with fewer than 10)</td><td><code>few_tx</code> flag; empty-subset statistics left as NaN (a meaningful "no such activity" state for the trees), median-imputed with missing-value indicators for the linear model</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Model comparison (out-of-fold ROC-AUC, same 5 folds)</h3>
+  <figure>
+    <a href="assets/12_model_comparison.png" target="_blank" rel="noopener"><img src="assets/12_model_comparison.png" alt="Bar chart of OOF AUC per model and ROC curves" loading="lazy"></a>
+    <figcaption><b>A blend of two different model families wins.</b> The 7-feature logistic baseline scores 0.563. On the full feature set, CatBoost scores 0.629, XGBoost 0.637, the LightGBM 3-seed bag 0.639, and logistic regression 0.6405. The logit-space blend of LightGBM and logistic regression reaches <strong>0.644</strong> (fold range 0.627–0.665). The two families correlate at only 0.81, which is why blending helps.</figcaption>
+  </figure>
+  <figure>
+    <a href="assets/11_feature_importance.png" target="_blank" rel="noopener"><img src="assets/11_feature_importance.png" alt="Top 20 LightGBM features by gain share" loading="lazy"></a>
+    <figcaption><b>Importances match the EDA, with no leak signature.</b> The top features are the account's lowest amount (which captures floor-clipped inflows), cash-deposit amount quantiles, outgoing bank-transfer amount levels, and cash share of volume. No feature exceeds 4.2% of total gain.</figcaption>
+  </figure>
+
+  <h3>Validation and robustness checks</h3>
+  <ul>
+    <li><strong>No early stopping on the scoring fold.</strong> Tree counts, Optuna hyperparameters (30 trials), the logistic <code>C</code>, and blend weights are all chosen on a <em>different</em> 5-fold split (seed 7). The tuning landscape was flat (0.634–0.642), so most of the gains come from features and blending, not tuning.</li>
+    <li><strong>Permuted-label test:</strong> the same pipeline on shuffled labels scores 0.495. <strong>Adversarial validation</strong> (train versus test) scores 0.496, so the features are consistent across splits.</li>
+    <li><strong>Trigger-burst ablation:</strong> pooling the burst gives 0.6435, a separate burst block 0.6425, burst-free timing features 0.6405, and excluding the burst entirely 0.6397. The model doesn't hinge on the artifact.</li>
+    <li><strong>Also tried and rejected:</strong> a transaction-level model whose predictions are averaged per alert (0.556, because the signal lies in account-level composition, not in individual transactions), and a leaner amount-only feature set (tied).</li>
+  </ul>
+  <figure>
+    <a href="assets/13_calibration.png" target="_blank" rel="noopener"><img src="assets/13_calibration.png" alt="Calibration curve and predicted probability distributions for train OOF and test" loading="lazy"></a>
+    <figcaption><b>Calibrated, well-spread probabilities.</b> After Platt scaling, the mean OOF probability equals the 17.2% base rate. Test predictions range from 0.007 to 0.49 (median 0.16), and their distribution matches the out-of-fold one.</figcaption>
+  </figure>
+</section>
+
+<!-- 7 ------------------------------------------------------------------ -->
+<section id="conclusion">
+  <span class="section-num">Section 7</span>
+  <h2>Conclusion: top findings</h2>
+  <ol class="findings">
+    <li><strong>What drives escalation is the composition of the money flow, not a single event.</strong> Accounts that move more of their volume in cash, and use smaller bank transfers and card payments than is typical for each channel, are the ones that get escalated.</li>
+    <li><strong>The data is temporally clean, but its timestamps aren't.</strong> No transaction comes after its alert, yet about 8% of transactions are packed into the three minutes before it. We traced this artifact, confirmed it's equal across classes, and showed the model is robust to removing it.</li>
+    <li><strong>Clipping carries signal.</strong> Amounts are clipped at a hard floor that only incoming bank transfers reach, and accounts with such inflows escalate at half the base rate.</li>
+    <li><strong>The classic AML intuitions don't hold here.</strong> There's no pre-alert acceleration, no night-time pattern, and no weekday pattern. Recency features are kept for completeness but carry almost no signal.</li>
+    <li><strong>The signal is weak and diffuse, so honest validation matters.</strong> The best single feature scores 0.57 AUC and the final blend 0.644 out of fold. That estimate uses no early stopping on the scoring folds, tunes on a separate split, and passes permuted-label and adversarial checks.</li>
+  </ol>
+</section>
+
+</main>
+
+<footer>
+  Team 365B6DEC · Fintech alert-triage competition · All charts generated by <code>notebooks/alert_triage_solution.ipynb</code>
+</footer>
+
+</body>
+</html>
