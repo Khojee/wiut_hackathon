@@ -1,14 +1,4 @@
 """Signal-level feature engineering from per-transaction history.
-
-Input transactions must already be filtered to pre-signal history and sorted by
-(signal_id, tranzaksiya_vaqti) -- see src.data.load_split.
-
-Missing-value policy (documented, applied identically to train and test):
-  * counts and shares are 0 when the relevant subset is empty;
-  * statistics of an empty subset (e.g. mean amount of cash tx for a signal with no
-    cash tx, std of a single tx) stay NaN -- gradient boosting routes NaN natively and
-    "no such activity" is a meaningful state; the linear baseline imputes medians;
-  * signals with no transactions at all get n_tx = 0 plus the flags few_tx / no_tx.
 """
 import numpy as np
 import pandas as pd
@@ -87,12 +77,7 @@ def _prepare(tx: pd.DataFrame, type_stats: pd.DataFrame) -> pd.DataFrame:
 def trigger_burst_mask(tx: pd.DataFrame) -> pd.Series:
     """Transactions stamped in the final 3 minutes of the day before (or of) the alert date,
     or exactly at 00:00:00 on the alert date.
-
-    ~8% of all rows (about 40 per alert, present for 99% of alerts) are packed into
-    23:57:00-23:59:59 right before the alert. We treat them as the alert-trigger burst:
-    kept as their own feature block, but excluded from the behavioural-history features
-    so they do not distort gaps, per-day counts, recency windows and last-K statistics.
-    """
+ """
     t = tx[TX_TIME]
     days_before = (tx[SIGNAL_DATE] - t.dt.floor("D")).dt.days
     tod = t.dt.hour * 3600 + t.dt.minute * 60 + t.dt.second
@@ -124,13 +109,6 @@ def _burst_features(b: pd.DataFrame) -> pd.DataFrame:
 def build_features(tx: pd.DataFrame, signals: pd.DataFrame, type_stats: pd.DataFrame,
                    burst_block: bool = False, hist_timing: bool = False) -> pd.DataFrame:
     """Return one row per signal_id (in the order of `signals`) with engineered features.
-
-    `type_stats` must come from fit_type_stats on the training transactions, for both splits.
-    Core features pool the whole pre-alert history (trigger burst included: its transactions
-    carry the same account-level amount/type signal). Optional blocks, both evaluated and
-    rejected in CV because they add noise without signal:
-      * burst_block -- statistics of the trigger burst on its own;
-      * hist_timing -- timing/recency features recomputed on burst-free history ("h_" prefix).
     """
     parts = [_core_features(_prepare(tx, type_stats))]
     if burst_block or hist_timing:
