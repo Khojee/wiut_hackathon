@@ -258,8 +258,23 @@ figcaption b { color: var(--ink-soft); }
   border-radius: var(--radius);
   padding: 18px 20px;
 }
-.member h3 { margin: 0 0 8px; font-size: 18px; }
-.member p { margin: 0; font-size: 15.5px; }
+.member h3 { margin: 0 0 4px; font-size: 18px; font-weight: 700; }
+.member .role {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.4;
+}
+.member .bio {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  font-size: 15px;
+  line-height: 1.6;
+}
 
 footer { text-align: center; color: var(--muted); font-size: 14px; padding: 30px 24px 50px; }
 
